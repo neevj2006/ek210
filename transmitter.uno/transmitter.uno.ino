@@ -1,12 +1,14 @@
+// Arduino A
+
+#include <IRremote.h>
 #include <Keypad.h>
 #include <Servo.h>
 
-// === Pin Assignments ===
-const int IR_LED = 11;
-const int IR_RECV = 12;
+#define PIN_RECV 12
+#define PIN_SEND 11
+
 const int SERVO_PIN = A0;
 
-// === Keypad Setup ===
 const byte ROWS = 4;
 const byte COLS = 4;
 char keys[ROWS][COLS] = {
@@ -19,97 +21,97 @@ byte rowPins[ROWS] = {5, 4, 3, 2};
 byte colPins[COLS] = {9, 8, 7, 6};
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
-// === Servo Setup ===
 Servo myservo;
 
-// === Function Prototypes ===
-void send38kHzBurst(unsigned long durationMicros);
-bool checkReceiver();
-void sendCodeword(int bursts);
+unsigned long lastNonSamsungTime = 0;
+bool waitingForNEC = false;
+
+uint8_t mapKeyToHEX(char key);
 
 void setup() {
   Serial.begin(115200);
-  pinMode(IR_LED, OUTPUT);
-  pinMode(IR_RECV, INPUT);
+  IrReceiver.begin(PIN_RECV);
+  IrSender.begin(PIN_SEND);
   myservo.attach(SERVO_PIN);
   myservo.write(0);
   Serial.println("Arduino 1 Ready - Waiting for key input...");
 }
 
 void loop() {
-  // 1. Wait for keypad input
   char key = keypad.getKey();
   if (key) {
     Serial.print("Key pressed: ");
     Serial.println(key);
 
-    // Map key to number of frames (codewords)
-    int frames = 0;
-    if (key >= '0' && key <= '9') frames = (key - '0') + 5;
-    else if (key == '*') frames = 15;
-    else if (key == '#') frames = 16;
-    else if (key == 'A') frames = 17;
-    else if (key == 'B') frames = 18;
-    else if (key == 'C') frames = 19;
-    else if (key == 'D') frames = 20;
-
-    // 2. Rotate servo to search for Arduino 2 signal
-    bool found = false;
+    uint8_t message = mapKeyToHEX(key);
+    Serial.print("Message: ");
+    Serial.println(message);
+    
+    bool handshakeComplete = false;
     for (int angle = 0; angle <= 90; angle += 5) {
       myservo.write(angle);
-      delay(300);  // allow servo to move
-      send38kHzBurst(100000); // send a 100 ms IR burst
+      delay(300);
 
-      if (checkReceiver()) {
-        Serial.print("Signal detected at ");
-        Serial.print(angle);
-        Serial.println(" degrees!");
-        found = true;
-        break;
+      // ---------------- SEND SAMSUNG CONTINUOUSLY ----------------
+      IrSender.sendSamsung(0x0708, 0x55, 0);
+      delay(200);
+
+      if (IrReceiver.decode()) {
+
+        uint8_t proto = IrReceiver.decodedIRData.protocol;
+
+        if (!waitingForNEC) {
+          // Normal Samsung sending mode
+          if (proto != SAMSUNG) {
+            Serial.println("Non-Samsung detected, stopping Samsung burst");
+            waitingForNEC = true;
+            lastNonSamsungTime = millis();
+          }
+        } 
+        else {
+          // Waiting for NEC
+          if (proto == NEC) {
+            Serial.println("NEC detected → Handshake complete!");
+            handshakeComplete = true;   // << STOP everything
+            IrSender.sendSamsung(0x0708, message,0);
+            return;
+          }
+        }
+
+        IrReceiver.resume();
+      }
+
+      // ---------------- WAIT FOR NEC TIMEOUT ----------------
+      if (waitingForNEC) {
+        if (millis() - lastNonSamsungTime > 1000) {
+          Serial.println("No NEC detected → resuming Samsung burst");
+          waitingForNEC = false;
+        }
+        return; // do NOT send Samsung while waiting
       }
     }
-
-    if (found) {
-      // 3. Send the codeword as IR bursts
-
-      delay(1000);
-      Serial.print("Sending codeword (");
-      Serial.print(frames);
-      Serial.println(" frames)...");
-      sendCodeword(frames);
-      Serial.println("Codeword sent.");
-    } else {
-      Serial.println("No receiver detected during scan.");
-    }
-
-    // Reset servo
-    myservo.write(0);
-    delay(1000);
   }
 }
 
-// === Helper: Emit 38 kHz carrier for a duration (µs) ===
-void send38kHzBurst(unsigned long durationMicros) {
-  unsigned long endMicros = micros() + durationMicros;
-  while (micros() < endMicros) {
-    digitalWrite(IR_LED, HIGH);
-    delayMicroseconds(13);
-    digitalWrite(IR_LED, LOW);
-    delayMicroseconds(13);
-  }
-}
-
-// === Helper: Check if IR receiver detects signal ===
-bool checkReceiver() {
-  // LOW = detected for most HX1838/V1838 modules
-  int val = digitalRead(IR_RECV);
-  return (val == LOW);
-}
-
-// === Helper: Send codeword as N bursts ===
-void sendCodeword(int bursts) {
-  for (int i = 0; i < bursts; i++) {
-    send38kHzBurst(100000);  // 100 ms burst
-    delay(100);              // gap between frames
+uint8_t mapKeyToHEX(char key) {
+  switch (key) {
+    case '0': return 0x00;
+    case '1': return 0x01;
+    case '2': return 0x02;
+    case '3': return 0x03;
+    case '4': return 0x04;
+    case '5': return 0x05;
+    case '6': return 0x06;
+    case '7': return 0x07;
+    case '8': return 0x08;
+    case '9': return 0x09;
+    case '*': return 0x0A;
+    case '#': return 0x0B;
+    case 'A': return 0x0C;
+    case 'B': return 0x0D;
+    case 'C': return 0x0E;
+    case 'D': return 0x0F;
+    default:
+      return 0xFF; // invalid character
   }
 }
