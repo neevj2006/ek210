@@ -9,7 +9,7 @@
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-char mapHEXToKey(uint8_t hex);
+char mapHEXToKey(int hex);
 
 void setup() {
   Serial.begin(9600);
@@ -28,13 +28,32 @@ void loop() {
   if (IrReceiver.decode()) {
 
     uint8_t proto = IrReceiver.decodedIRData.protocol;
+    
+      uint8_t address = IrReceiver.decodedIRData.address;
+      uint8_t message = IrReceiver.decodedIRData.command;
 
     if (proto == SAMSUNG) {
       Serial.println("Samsung detected → Sending NEC handshake");
+      Serial.print("Message:");
+      Serial.println(message);
+      Serial.print("Address: ");
+      Serial.println(address);
 
-      uint8_t address = IrReceiver.decodedIRData.address;
-      uint8_t message = IrReceiver.decodedIRData.command;
-      if (address == 0x0708 && message != 0x55) {
+
+      // --- Send two NEC signals ---
+      IrSender.sendNEC(0x0102, 0x34, 0);
+      delay(300);
+      IrSender.sendNEC(0x0102, 0x34, 0);
+
+      Serial.println("NEC handshake sent");
+    } 
+    else {
+      Serial.print("NEC Message:");
+      Serial.println(message);
+      Serial.print("Address: ");
+      Serial.println(address);
+
+      if (address==2 && message!=52) {
         Serial.print("Codeword Hex: ");
         Serial.println(message);
         char translatedMessage = mapHEXToKey(message);
@@ -48,40 +67,31 @@ void loop() {
         lcd.setCursor(0,1);
         lcd.print(translatedMessage);
       }
-
-
-      // --- Send two NEC signals ---
-      IrSender.sendNEC(0x0102, 0x34, 0);
-      delay(300);
-      IrSender.sendNEC(0x0102, 0x34, 0);
-
-      Serial.println("NEC handshake sent");
     }
 
     IrReceiver.resume();
   }
 }
 
-char mapHEXToKey(uint8_t hex) {
+char mapHEXToKey(int hex) {
   switch (hex) {
-    case 0x00: return '0';
-    case 0x01: return '1';
-    case 0x02: return '2';
-    case 0x03: return '3';
-    case 0x04: return '4';
-    case 0x05: return '5';
-    case 0x06: return '6';
-    case 0x07: return '7';
-    case 0x08: return '8';
-    case 0x09: return '9';
-    case 0x0A: return '*';
-    case 0x0B: return '#';
-    case 0x0C: return 'A';
-    case 0x0D: return 'B';
-    case 0x0E: return 'C';
-    case 0x0F: return 'D';
+    case 0: return '0';
+    case 1: return '1';
+    case 2: return '2';
+    case 3: return '3';
+    case 4: return '4';
+    case 5: return '5';
+    case 6: return '6';
+    case 7: return '7';
+    case 8: return '8';
+    case 9: return '9';
+    case 10: return '*';
+    case 11: return '#';
+    case 12: return 'A';
+    case 13: return 'B';
+    case 14: return 'C';
+    case 15: return 'D';
     default:
       return '?';  // invalid hex
   }
 }
-

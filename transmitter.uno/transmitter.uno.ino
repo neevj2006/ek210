@@ -1,14 +1,13 @@
-// Arduino A
-
+// ------------------- Arduino A -------------------
 #include <IRremote.h>
 #include <Keypad.h>
 #include <Servo.h>
 
 #define PIN_RECV 12
 #define PIN_SEND 11
+#define SERVO_PIN A0
 
-const int SERVO_PIN = A0;
-
+// ------------------- KEYPAD -------------------
 const byte ROWS = 4;
 const byte COLS = 4;
 char keys[ROWS][COLS] = {
@@ -21,78 +20,17 @@ byte rowPins[ROWS] = {5, 4, 3, 2};
 byte colPins[COLS] = {9, 8, 7, 6};
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
+// ------------------- SERVO -------------------
 Servo myservo;
 
+// ------------------- STATE VARIABLES -------------------
 unsigned long lastNonSamsungTime = 0;
 bool waitingForNEC = false;
+bool handshakeDone = false;
 
-uint8_t mapKeyToHEX(char key);
+uint8_t messageHEX = 0xFF;
 
-void setup() {
-  Serial.begin(115200);
-  IrReceiver.begin(PIN_RECV);
-  IrSender.begin(PIN_SEND);
-  myservo.attach(SERVO_PIN);
-  myservo.write(0);
-  Serial.println("Arduino 1 Ready - Waiting for key input...");
-}
-
-void loop() {
-  char key = keypad.getKey();
-  if (key) {
-    Serial.print("Key pressed: ");
-    Serial.println(key);
-
-    uint8_t message = mapKeyToHEX(key);
-    Serial.print("Message: ");
-    Serial.println(message);
-    
-    bool handshakeComplete = false;
-    for (int angle = 0; angle <= 90; angle += 5) {
-      myservo.write(angle);
-      delay(300);
-
-      // ---------------- SEND SAMSUNG CONTINUOUSLY ----------------
-      IrSender.sendSamsung(0x0708, 0x55, 0);
-      delay(200);
-
-      if (IrReceiver.decode()) {
-
-        uint8_t proto = IrReceiver.decodedIRData.protocol;
-
-        if (!waitingForNEC) {
-          // Normal Samsung sending mode
-          if (proto != SAMSUNG) {
-            Serial.println("Non-Samsung detected, stopping Samsung burst");
-            waitingForNEC = true;
-            lastNonSamsungTime = millis();
-          }
-        } 
-        else {
-          // Waiting for NEC
-          if (proto == NEC) {
-            Serial.println("NEC detected → Handshake complete!");
-            handshakeComplete = true;   // << STOP everything
-            IrSender.sendSamsung(0x0708, message,0);
-            return;
-          }
-        }
-
-        IrReceiver.resume();
-      }
-
-      // ---------------- WAIT FOR NEC TIMEOUT ----------------
-      if (waitingForNEC) {
-        if (millis() - lastNonSamsungTime > 1000) {
-          Serial.println("No NEC detected → resuming Samsung burst");
-          waitingForNEC = false;
-        }
-        return; // do NOT send Samsung while waiting
-      }
-    }
-  }
-}
-
+// ------------------- MAP KEYPAD KEY → HEX -------------------
 uint8_t mapKeyToHEX(char key) {
   switch (key) {
     case '0': return 0x00;
@@ -111,7 +49,124 @@ uint8_t mapKeyToHEX(char key) {
     case 'B': return 0x0D;
     case 'C': return 0x0E;
     case 'D': return 0x0F;
-    default:
-      return 0xFF; // invalid character
+    default: return 0xFF;
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  IrReceiver.begin(PIN_RECV);
+  IrSender.begin(PIN_SEND);
+
+  myservo.attach(SERVO_PIN);
+  myservo.write(0);
+
+  Serial.println("Arduino A Ready.");
+}
+
+void loop() {
+
+  // ------------------- WAIT FOR KEYPAD PRESS -------------------
+  if (!handshakeDone) {
+    char key = keypad.getKey();
+    if (key) {
+      Serial.print("Key pressed: ");
+      Serial.println(key);
+
+      messageHEX = mapKeyToHEX(key);
+      Serial.print("Mapped HEX: ");
+      Serial.println(messageHEX, HEX);
+
+      startScanningAndHandshake();   // <-- MAIN FUNCTION
+    }
+  }
+}
+
+// ==========================================================
+//                   MAIN LOGIC FUNCTION
+// ==========================================================
+void startScanningAndHandshake() {
+
+  Serial.println("Starting scanning + Samsung burst...");
+
+  waitingForNEC = false;
+  handshakeDone = false;
+
+  // ---------------------------------------------------------
+  // SCAN FROM 0 TO 90 DEGREES
+  // ---------------------------------------------------------
+  for (int angle = 0; angle <= 180; angle += 5) {
+
+    myservo.write(angle);
+    delay(300);
+
+    if (handshakeDone) break;
+
+    // Only send Samsung if NOT waiting for NEC
+    if (!waitingForNEC) {
+      IrSender.sendSamsung(0x0708, 0x55, 0);
+      delay(200);
+    }
+
+    // ---------------- READ SIGNALS ----------------
+    if (IrReceiver.decode()) {
+
+      uint8_t proto = IrReceiver.decodedIRData.protocol;
+
+      // ---------------- BEFORE NEC MODE ----------------
+      if (!waitingForNEC) {
+
+        // NOT Samsung → go into NEC waiting mode
+        if (proto != SAMSUNG) {
+          Serial.println("Non-Samsung detected → Waiting for NEC");
+          waitingForNEC = true;
+          lastNonSamsungTime = millis();
+        }
+      }
+
+      // ---------------- WAITING FOR NEC ----------------
+      else {
+        if (proto == NEC) {
+          Serial.println("NEC detected → Handshake Complete!");
+
+          handshakeDone = true;
+
+          // Send message to Arduino B
+          IrSender.sendNEC(0x0102, messageHEX, 0);
+          Serial.print("Sent message HEX: ");
+          Serial.println(messageHEX, HEX);
+
+          break;
+        }
+      }
+
+      IrReceiver.resume();
+    }
+
+    // ---------------- NEC TIMEOUT ----------------
+    if (waitingForNEC) {
+      if (millis() - lastNonSamsungTime > 1000) {
+        Serial.println("NEC timeout → resuming Samsung + rotation");
+        waitingForNEC = false;
+      }
+      continue;
+    }
+  }
+
+  // =====================================================
+  // AFTER MESSAGE SENT → RESET SYSTEM
+  // =====================================================
+  if (handshakeDone) {
+    Serial.println("Returning to home position...");
+
+    myservo.write(0);
+    delay(500);
+
+    // Reset states for next key
+    waitingForNEC = false;
+    handshakeDone = false;
+    messageHEX = 0xFF;
+
+    Serial.println("Ready for next key!");
   }
 }
