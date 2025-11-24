@@ -93,7 +93,7 @@ void startScanningAndHandshake() {
   handshakeDone = false;
 
   // ---------------------------------------------------------
-  // SCAN FROM 0 TO 90 DEGREES
+  // SCAN FROM 0 TO 180 DEGREES
   // ---------------------------------------------------------
   for (int angle = 0; angle <= 180; angle += 5) {
 
@@ -159,14 +159,15 @@ void startScanningAndHandshake() {
   if (handshakeDone) {
     Serial.println("Returning to home position...");
 
-    myservo.write(0);
-    delay(500);
-
     // Reset states for next key
     waitingForNEC = false;
     handshakeDone = false;
     messageHEX = 0xFF;
 
     Serial.println("Ready for next key!");
+  } else {
+    Serial.println("No device found. Returning to home position")
   }
+  myservo.write(0);
+  delay(500);
 }
